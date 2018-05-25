@@ -70,15 +70,15 @@ func getCurrentNodeCount(d dockerConstuct) int {
 func confirmNewNode(d dockerConstuct, count int) {
 
 	n := getCurrentNodeCount(d)
-	fmt.Printf("nodes %d/%d", n, count)
+	fmt.Printf("nodes %d/%d\n", n, count)
 	final := "bad"
 	if n != count {
 		wait := 1
 		// waite 10+min for new aws node
 		for wait < 120 {
-			wait += wait
+			wait++
 			n := getCurrentNodeCount(d)
-			fmt.Printf("nodes %d/%d\n", n, count)
+			fmt.Printf("nodes %d/%d:%d\n", n, count, wait)
 			time.Sleep(30 * time.Second)
 			if n == count {
 				fmt.Printf("Replacement node is joined to the swarm.\n")
@@ -90,9 +90,10 @@ func confirmNewNode(d dockerConstuct, count int) {
 		if final == "bad" {
 			fmt.Printf("There was a problem with adding the new node. We waited 320s\nInvestigate\n")
 			e := os.ErrInvalid
+			os.Exit(13)
 			panic(e)
 		} else {
-			fmt.Printf("Node cycle successful")
+			fmt.Printf("Node cycle successful\n")
 		}
 	}
 }
@@ -212,7 +213,7 @@ func removeDockerNode(r swarm.Node, dockerConnection dockerConstuct) {
 		} else {
 			fmt.Printf("removed %s\n", r.Description.Hostname)
 		}
-		fmt.Printf("node removed")
+		fmt.Printf("node removed\n")
 	} else {
 		fmt.Printf("node is a worker\nremoving:%s\n", r.ID)
 		erm := cli.NodeRemove(ctx, r.ID, types.NodeRemoveOptions{})
