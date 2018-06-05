@@ -27,10 +27,12 @@ type dockerConstuct struct {
 
 func main() {
 	ip := os.Args[1]
-	fmt.Printf("Working on %s\n", ip)
 	d := connectToDocker()
 	count := getCurrentNodeCount(d)
+
+	fmt.Printf("Working on %s\n", ip)
 	fmt.Printf("there are %d nodes\n", count)
+
 	node := drainDockerNode(d, ip)
 	shutdownAWSMachine(node)
 	removeDockerNode(node, d)
@@ -74,8 +76,8 @@ func confirmNewNode(d dockerConstuct, count int) {
 	final := "bad"
 	if n != count {
 		wait := 1
-		// waite 10+min for new aws node
-		for wait < 120 {
+		// waite 8min for new aws node
+		for wait < 15 {
 			wait++
 			n := getCurrentNodeCount(d)
 			fmt.Printf("nodes %d/%d:%d\n", n, count, wait)
@@ -88,7 +90,7 @@ func confirmNewNode(d dockerConstuct, count int) {
 
 		}
 		if final == "bad" {
-			fmt.Printf("There was a problem with adding the new node. We waited 320s\nInvestigate\n")
+			fmt.Printf("There was a problem with adding the new node. We waited 8m and no new node has been added.\nInvestigate\n")
 			e := os.ErrInvalid
 			os.Exit(13)
 			panic(e)
@@ -112,18 +114,18 @@ func drainDockerNode(dockerConnection dockerConstuct, ip string) swarm.Node {
 	options := types.NodeListOptions{Filters: filterArgs}
 
 	nodes, lerr := cli.NodeList(ctx, options)
-	if lerr != nil {
-		fmt.Println("Problem with the list filter")
-		panic(lerr)
-	}
 	if len(nodes) == 0 {
 		fmt.Printf("There were no nodes returned")
 		os.Exit(4)
 	}
 
+	if lerr != nil {
+		fmt.Println("Problem with the list filter")
+		panic(lerr)
+	}
+
 	// node availability states = active, pause, drain
 	nodes[0].Spec.Availability = "drain"
-	// drain node
 
 	fmt.Printf("updating node: %s \n", nodes[0].Description.Hostname)
 	r := cli.NodeUpdate(ctx, nodes[0].ID, nodes[0].Version, nodes[0].Spec)
@@ -230,7 +232,7 @@ func confirmNodeDown(b swarm.Node, d dockerConstuct) swarm.Node {
 	time.Sleep(10 * time.Second)
 	if b.Status.State == "ready" {
 		wait := 1
-		//wait 60s then break out
+		//wait 120s then break out
 		for wait < 12 {
 			wait += wait
 			n := checkNodeStatus(arg, d)
@@ -240,7 +242,7 @@ func confirmNodeDown(b swarm.Node, d dockerConstuct) swarm.Node {
 			time.Sleep(10 * time.Second)
 		}
 	}
-	fmt.Printf("Waited 60s for %s to shutdown.\n", b.ID)
+	fmt.Printf("Waited 120s for %s to shutdown.\n", b.ID)
 	os.Exit(3)
 	return n
 }
@@ -264,9 +266,9 @@ func checkNodeStatus(arg string, d dockerConstuct) swarm.Node {
 
 func shutdownAWSMachine(b swarm.Node) {
 	// call aws to shutdown machine by instanceid
-	creds := credentials.NewSharedCredentials("/home/gris/.aws/credentials", "default")
+	creds := credentials.NewSharedCredentials("/home/gris/.aws/credentials", "Prod")
 	config := aws.NewConfig()
-	config.Region = aws.String("us-east-1")
+	config.Region = aws.String("us-west-2")
 	config.Credentials = creds
 	session, err := session.NewSession(config)
 	if err != nil {
@@ -278,7 +280,7 @@ func shutdownAWSMachine(b swarm.Node) {
 		Filters: []*ec2.Filter{
 			&ec2.Filter{
 				Name:   aws.String("private-dns-name"),
-				Values: []*string{aws.String(b.Description.Hostname + ".ec2.internal")},
+				Values: []*string{aws.String(b.Description.Hostname + ".us-west-2.compute.internal")},
 			},
 		},
 	}
