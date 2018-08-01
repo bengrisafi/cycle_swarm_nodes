@@ -25,16 +25,29 @@ type dockerConstuct struct {
 	client  client.Client
 }
 
+type dockerNode struct {
+	awsId       string
+	awsHostname string
+	dkrNodeId   string
+	dkrHostname string
+	dkrNodeType string
+}
+
 func main() {
 	ip := os.Args[1]
+	profile := os.Args[2]
+	if profile == "" {
+		profile = "default"
+	}
 	d := connectToDocker()
+	s := createAWSSession(profile)
 	count := getCurrentNodeCount(d)
 
 	fmt.Printf("Working on %s\n", ip)
 	fmt.Printf("there are %d nodes\n", count)
 
 	node := drainDockerNode(d, ip)
-	shutdownAWSMachine(node)
+	shutdownAWSMachine(node, profile, s)
 	removeDockerNode(node, d)
 	confirmNewNode(d, count)
 }
@@ -47,11 +60,38 @@ func connectToDocker() dockerConstuct {
 	if err != nil {
 		panic(err)
 	}
+
 	d := dockerConstuct{
 		context: ctx,
 		client:  *cli,
 	}
 	return d
+}
+
+func createAWSSession(profile string) session.Session {
+
+	creds := credentials.NewSharedCredentials("$HOME/.aws/credentials", profile)
+	config := aws.NewConfig()
+	config.Credentials = creds
+
+	switch profile {
+	case "Prod":
+		config.Region = aws.String("us-west-2")
+	case "ProdEU":
+		config.Region = aws.String("eu-central-1")
+	case "", "NonProd":
+		config.Region = aws.String("us-east-1")
+	default:
+		fmt.Printf("Unknown profile %s \nValid profiles are \nProd, ProdEU, NonProd\n", profile)
+		panic("bad profile")
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		Profile: profile,
+		Config:  *config,
+	}))
+
+	return *sess
 }
 
 func getCurrentNodeCount(d dockerConstuct) int {
@@ -69,36 +109,7 @@ func getCurrentNodeCount(d dockerConstuct) int {
 	return len(nodes)
 }
 
-func confirmNewNode(d dockerConstuct, count int) {
-
-	n := getCurrentNodeCount(d)
-	fmt.Printf("nodes %d/%d\n", n, count)
-	final := "bad"
-	if n != count {
-		wait := 1
-		// waite 8min for new aws node
-		for wait < 15 {
-			wait++
-			n := getCurrentNodeCount(d)
-			fmt.Printf("nodes %d/%d:%d\n", n, count, wait)
-			time.Sleep(30 * time.Second)
-			if n == count {
-				fmt.Printf("Replacement node is joined to the swarm.\n")
-				final = "good"
-				break
-			}
-
-		}
-		if final == "bad" {
-			fmt.Printf("There was a problem with adding the new node. We waited 8m and no new node has been added.\nInvestigate\n")
-			e := os.ErrInvalid
-			os.Exit(13)
-			panic(e)
-		} else {
-			fmt.Printf("Node cycle successful\n")
-		}
-	}
-}
+func buildNodeStruct(d dockerConstuct) {}
 
 func drainDockerNode(dockerConnection dockerConstuct, ip string) swarm.Node {
 
@@ -115,7 +126,7 @@ func drainDockerNode(dockerConnection dockerConstuct, ip string) swarm.Node {
 
 	nodes, lerr := cli.NodeList(ctx, options)
 	if len(nodes) == 0 {
-		fmt.Printf("There were no nodes returned")
+		fmt.Printf("There were no nodes \n")
 		os.Exit(4)
 	}
 
@@ -264,23 +275,14 @@ func checkNodeStatus(arg string, d dockerConstuct) swarm.Node {
 	return nodes[0]
 }
 
-func shutdownAWSMachine(b swarm.Node) {
-	// call aws to shutdown machine by instanceid
-	creds := credentials.NewSharedCredentials("/home/gris/.aws/credentials", "Prod")
-	config := aws.NewConfig()
-	config.Region = aws.String("us-west-2")
-	config.Credentials = creds
-	session, err := session.NewSession(config)
-	if err != nil {
-		fmt.Println("unable to create session")
-		panic(err)
-	}
-	svcEC2 := ec2.New(session)
+func shutdownAWSMachine(b swarm.Node, profile string, session session.Session) {
+
+	svcEC2 := ec2.New(&session)
 	sinput := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{
 			&ec2.Filter{
 				Name:   aws.String("private-dns-name"),
-				Values: []*string{aws.String(b.Description.Hostname + ".us-west-2.compute.internal")},
+				Values: []*string{aws.String(b.Description.Hostname + ".eu-central-1.compute.internal")},
 			},
 		},
 	}
@@ -289,34 +291,37 @@ func shutdownAWSMachine(b swarm.Node) {
 		fmt.Println("somethign is wrong with the query")
 		panic(err)
 	}
-	svc := ec2.New(session)
+
+	if len(results.Reservations) == 0 {
+		fmt.Println("no results found")
+		panic(err)
+	}
+	svc := ec2.New(&session)
 	input := &ec2.TerminateInstancesInput{
 		InstanceIds: []*string{
 			aws.String(*results.Reservations[0].Instances[0].InstanceId),
 		},
 		DryRun: aws.Bool(true),
 	}
-	//confirm := askForConfirmation(*results.Reservations[0].Instances[0].InstanceId)
-	confirm := true
-	if confirm {
-		result, err := svc.TerminateInstances(input)
-		awsErr, ok := err.(awserr.Error)
-		if ok && awsErr.Code() == "DryRunOperation" {
-			// change to false to have this actually work
-			input.DryRun = aws.Bool(false)
-			result, err = svc.TerminateInstances(input)
-			if err != nil {
-				fmt.Println("Error", err)
-			} else {
-				fmt.Println("Success", result.TerminatingInstances)
-			}
-		} else {
+
+	result, err := svc.TerminateInstances(input)
+	awsErr, ok := err.(awserr.Error)
+	if ok && awsErr.Code() == "DryRunOperation" {
+		// change to false to have this actually work
+		input.DryRun = aws.Bool(false)
+		result, err = svc.TerminateInstances(input)
+		if err != nil {
 			fmt.Println("Error", err)
+		} else {
+			fmt.Println("Success", result.TerminatingInstances)
 		}
 	} else {
-		fmt.Printf("Instance not confirmed for removal in AWS, but is still drained in swarm %s\n", *results.Reservations[0].Instances[0].PrivateIpAddress)
-		os.Exit(1)
+		fmt.Println("Error", err)
 	}
+	// } else {
+	// 	fmt.Printf("Instance not confirmed for removal in AWS, but is still drained in swarm %s\n", *results.Reservations[0].Instances[0].PrivateIpAddress)
+	// 	os.Exit(1)
+	// }
 }
 
 func askForConfirmation(s string) bool {
@@ -336,6 +341,37 @@ func askForConfirmation(s string) bool {
 			return true
 		} else if response == "n" || response == "no" {
 			return false
+		}
+	}
+}
+
+func confirmNewNode(d dockerConstuct, count int) {
+
+	n := getCurrentNodeCount(d)
+	fmt.Printf("nodes %d/%d\n", n, count)
+	final := "bad"
+	if n != count {
+		wait := 1
+		// waite 8min for new aws node
+		for wait < 15 {
+			wait++
+			n := getCurrentNodeCount(d)
+			fmt.Printf("nodes %d/%d:%d\n", n, count, wait)
+			time.Sleep(30 * time.Second)
+			if n == count {
+				fmt.Printf("Replacement node is joined to the swarm.\n")
+				final = "good"
+				break
+			}
+
+		}
+		if final == "bad" {
+			fmt.Printf("There was a problem with adding the new node. We waited 8m and no new node has been added.\nInvestigate\n")
+			e := os.ErrInvalid
+			os.Exit(13)
+			panic(e)
+		} else {
+			fmt.Printf("Node cycle successful\n")
 		}
 	}
 }
