@@ -70,14 +70,14 @@ func connectToDocker() dockerConstuct {
 
 func createAWSSession(profile string) session.Session {
 
-	creds := credentials.NewSharedCredentials("$HOME/.aws/credentials", profile)
+	creds := credentials.NewSharedCredentials("/mnt/c/Users/ben.grisafi/.aws/credentials", profile)
 	config := aws.NewConfig()
 	config.Credentials = creds
 
 	switch profile {
-	case "Prod":
+	case "Prod", "prodwest":
 		config.Region = aws.String("us-west-2")
-	case "ProdEU":
+	case "ProdEU", "prodeu":
 		config.Region = aws.String("eu-central-1")
 	case "", "NonProd":
 		config.Region = aws.String("us-east-1")
@@ -85,7 +85,7 @@ func createAWSSession(profile string) session.Session {
 		fmt.Printf("Unknown profile %s \nValid profiles are \nProd, ProdEU, NonProd\n", profile)
 		panic("bad profile")
 	}
-
+	fmt.Println(profile)
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		Profile: profile,
 		Config:  *config,
@@ -278,11 +278,16 @@ func checkNodeStatus(arg string, d dockerConstuct) swarm.Node {
 func shutdownAWSMachine(b swarm.Node, profile string, session session.Session) {
 
 	svcEC2 := ec2.New(&session)
+	hostname := b.Description.Hostname + ".ec2.internal"
+	if profile != "default" {
+		hostname = b.Description.Hostname + "." + *session.Config.Region + ".compute.internal"
+	}
+	fmt.Println(hostname)
 	sinput := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{
 			&ec2.Filter{
 				Name:   aws.String("private-dns-name"),
-				Values: []*string{aws.String(b.Description.Hostname + ".eu-central-1.compute.internal")},
+				Values: []*string{aws.String(hostname)},
 			},
 		},
 	}
@@ -352,8 +357,8 @@ func confirmNewNode(d dockerConstuct, count int) {
 	final := "bad"
 	if n != count {
 		wait := 1
-		// waite 8min for new aws node
-		for wait < 15 {
+		// wait 15min for new aws node
+		for wait < 30 {
 			wait++
 			n := getCurrentNodeCount(d)
 			fmt.Printf("nodes %d/%d:%d\n", n, count, wait)
